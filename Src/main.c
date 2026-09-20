@@ -18,6 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "icm42688.h"
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
+#include <math.h>
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -51,6 +56,8 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
+volatile uint8_t accel_data_ready = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,6 +69,9 @@ static void MX_I2C2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 /* USER CODE BEGIN PFP */
+
+static HAL_StatusTypeDef CollectVibrationRms(float *rms_x, float *rms_y, float *rms_z);
+static void DisplayRms(float rms_x, float rms_y, float rms_z);
 
 /* USER CODE END PFP */
 
@@ -106,12 +116,35 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
 
+  ssd1306_Init();
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(0, 0);
+  ssd1306_WriteString("Starting...", Font_6x8, White);
+  ssd1306_UpdateScreen();
+
+  if (ICM42688_Init(&hi2c1) != HAL_OK)
+  {
+    ssd1306_Fill(Black);
+    ssd1306_SetCursor(0, 0);
+    ssd1306_WriteString("IMU NO CONNECTION", Font_6x8, White);
+    ssd1306_UpdateScreen();
+    Error_Handler();
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    float rms_x;
+    float rms_y;
+    float rms_z;
+
+    if (CollectVibrationRms(&rms_x, &rms_y, &rms_z) == HAL_OK)
+    {
+      DisplayRms(rms_x, rms_y, rms_z);
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -385,12 +418,97 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+
+static HAL_StatusTypeDef CollectVibrationRms(float *rms_x, float *rms_y, float *rms_z)
+{
+  enum { SAMPLE_COUNT = 500 };
+  static ICM42688_AccelSample samples[SAMPLE_COUNT];
+  int64_t sum_x = 0;
+  int64_t sum_y = 0;
+  int64_t sum_z = 0;
+  float mean_x;
+  float mean_y;
+  float mean_z;
+  float square_sum_x = 0.0f;
+  float square_sum_y = 0.0f;
+  float square_sum_z = 0.0f;
+
+  for (uint32_t index = 0; index < SAMPLE_COUNT; ++index)
+  {
+    uint32_t start = HAL_GetTick();
+    while (accel_data_ready == 0U)
+    {
+      if ((HAL_GetTick() - start) > 100U)
+      {
+        return HAL_TIMEOUT;
+      }
+    }
+    accel_data_ready = 0U;
+
+    if (ICM42688_ReadAccel(&hi2c1, &samples[index]) != HAL_OK)
+    {
+      return HAL_ERROR;
+    }
+    sum_x += samples[index].x;
+    sum_y += samples[index].y;
+    sum_z += samples[index].z;
+  }
+
+  mean_x = (float)sum_x / SAMPLE_COUNT;
+  mean_y = (float)sum_y / SAMPLE_COUNT;
+  mean_z = (float)sum_z / SAMPLE_COUNT;
+
+  for (uint32_t index = 0; index < SAMPLE_COUNT; ++index)
+  {
+    float delta_x = (float)samples[index].x - mean_x;
+    float delta_y = (float)samples[index].y - mean_y;
+    float delta_z = (float)samples[index].z - mean_z;
+    square_sum_x += delta_x * delta_x;
+    square_sum_y += delta_y * delta_y;
+    square_sum_z += delta_z * delta_z;
+  }
+
+  /* +/-16 g is 2048 LSB/g; convert the DC-removed RMS to m/s^2. */
+  const float acceleration_scale = 9.80665f / 2048.0f;
+  *rms_x = sqrtf(square_sum_x / SAMPLE_COUNT) * acceleration_scale;
+  *rms_y = sqrtf(square_sum_y / SAMPLE_COUNT) * acceleration_scale;
+  *rms_z = sqrtf(square_sum_z / SAMPLE_COUNT) * acceleration_scale;
+  return HAL_OK;
+}
+
+static void DisplayRms(float rms_x, float rms_y, float rms_z)
+{
+  char line[24];
+
+  ssd1306_Fill(Black);
+  snprintf(line, sizeof(line), "X: %5.2f m/s2", rms_x);
+  ssd1306_SetCursor(0, 0);
+  ssd1306_WriteString(line, Font_6x8, White);
+  snprintf(line, sizeof(line), "Y: %5.2f m/s2", rms_y);
+  ssd1306_SetCursor(0, 16);
+  ssd1306_WriteString(line, Font_6x8, White);
+  snprintf(line, sizeof(line), "Z: %5.2f m/s2", rms_z);
+  ssd1306_SetCursor(0, 32);
+  ssd1306_WriteString(line, Font_6x8, White);
+  ssd1306_UpdateScreen();
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == GPIO_PIN_5)
+  {
+    accel_data_ready = 1U;
+  }
+}
 
 /* USER CODE END 4 */
 
