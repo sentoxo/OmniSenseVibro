@@ -1,3 +1,9 @@
+[2026-09-20T00:25]
+Added ping-pong CDC packet buffers to prevent USB backpressure from overwriting an in-flight packet.
+[2026-09-20T00:20]
+Decoupled USB backpressure from queue advancement, added overwrite-on-overrun buffering, 64-byte CDC draining, and bounded I2C read retries.
+[2026-09-20T00:10]
+Added loss-detecting 2 kHz accelerometer streaming over USB CDC with sequence-numbered raw samples.
 [2026-09-20T00:01]
 Enabled float formatting in newlib-nano so OLED RMS values using snprintf %f are displayed.
 [2026-09-20T00:03]

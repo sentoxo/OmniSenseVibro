@@ -28,6 +28,7 @@
 #include "ssd1306_fonts.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +56,20 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
-volatile uint8_t accel_data_ready = 0;
+#define ACCEL_SAMPLE_QUEUE_SIZE 8192U
+#define CDC_PACKET_SIZE         64U
+
+static ICM42688_AccelSample accel_sample_queue[ACCEL_SAMPLE_QUEUE_SIZE];
+static volatile uint16_t accel_queue_head = 0U;
+static volatile uint16_t accel_queue_tail = 0U;
+static volatile uint32_t accel_queue_overruns = 0U;
+static volatile uint32_t accel_i2c_failures = 0U;
+static uint32_t accel_sequence = 0U;
+static uint8_t cdc_stream_buffers[2][CDC_PACKET_SIZE];
+static uint8_t cdc_buffer_index = 0U;
+static int64_t rms_sum[3] = {0, 0, 0};
+static int64_t rms_square_sum[3] = {0, 0, 0};
+static uint16_t rms_sample_count = 0U;
 
 /* USER CODE END PV */
 
@@ -68,8 +82,9 @@ static void MX_I2C2_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
-static HAL_StatusTypeDef CollectVibrationRms(float *rms_x, float *rms_y, float *rms_z);
-static void DisplayRms(float rms_x, float rms_y, float rms_z);
+static void TransmitAccelSamples(void);
+static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
+                             uint16_t sample_count);
 
 /* USER CODE END PFP */
 
@@ -137,15 +152,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    
-    float rms_x;
-    float rms_y;
-    float rms_z;
-
-    if (CollectVibrationRms(&rms_x, &rms_y, &rms_z) == HAL_OK)
-    {
-      DisplayRms(rms_x, rms_y, rms_z);
-    }
+    TransmitAccelSamples();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -396,85 +403,130 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static HAL_StatusTypeDef CollectVibrationRms(float *rms_x, float *rms_y, float *rms_z)
+static void TransmitAccelSamples(void)
 {
-  enum { SAMPLE_COUNT = 500 };
-  static ICM42688_AccelSample samples[SAMPLE_COUNT];
-  int64_t sum_x = 0;
-  int64_t sum_y = 0;
-  int64_t sum_z = 0;
-  float mean_x;
-  float mean_y;
-  float mean_z;
-  float square_sum_x = 0.0f;
-  float square_sum_y = 0.0f;
-  float square_sum_z = 0.0f;
-
-  for (uint32_t index = 0; index < SAMPLE_COUNT; ++index)
+  while (accel_queue_tail != accel_queue_head)
   {
-    uint32_t start = HAL_GetTick();
-    while (accel_data_ready == 0U)
+    uint16_t tail = accel_queue_tail;
+    uint16_t head = accel_queue_head;
+    uint16_t sample_count = 0U;
+    uint16_t buffer_length = 0U;
+    char line[40];
+    ICM42688_AccelSample packet_samples[5];
+    uint8_t *cdc_stream_buffer = cdc_stream_buffers[cdc_buffer_index];
+
+    while (tail != head && sample_count < 5U)
     {
-      if ((HAL_GetTick() - start) > 100U)
+      ICM42688_AccelSample sample;
+      __disable_irq();
+      sample = accel_sample_queue[tail & (ACCEL_SAMPLE_QUEUE_SIZE - 1U)];
+      tail = (uint16_t)((tail + 1U) & (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
+      accel_queue_tail = tail;
+      __enable_irq();
+      packet_samples[sample_count] = sample;
+
+      int written = snprintf(line, sizeof(line),
+                           "S0,%lu,%d,%d,%d\n",
+                           (unsigned long)accel_sequence,
+                           (int)sample.x,
+                           (int)sample.y,
+                           (int)sample.z);
+      if (written <= 0 || (uint32_t)written >= CDC_PACKET_SIZE - buffer_length)
       {
-        return HAL_TIMEOUT;
+        break;
       }
+      memcpy(&cdc_stream_buffer[buffer_length], line, (size_t)written);
+      buffer_length = (uint16_t)(buffer_length + (uint16_t)written);
+      sample_count = (uint16_t)(sample_count + 1U);
+      accel_sequence++;
     }
-    accel_data_ready = 0U;
 
-    if (ICM42688_ReadAccel(&hi2c1, &samples[index]) != HAL_OK)
+    if (sample_count == 0U)
     {
-      return HAL_ERROR;
+      break;
     }
-    sum_x += samples[index].x;
-    sum_y += samples[index].y;
-    sum_z += samples[index].z;
+
+    UpdateRmsDisplay(packet_samples, sample_count);
+    if (CDC_Transmit_FS(cdc_stream_buffer, buffer_length) == USBD_OK)
+    {
+      cdc_buffer_index ^= 1U;
+    }
   }
-
-  mean_x = (float)sum_x / SAMPLE_COUNT;
-  mean_y = (float)sum_y / SAMPLE_COUNT;
-  mean_z = (float)sum_z / SAMPLE_COUNT;
-
-  for (uint32_t index = 0; index < SAMPLE_COUNT; ++index)
-  {
-    float delta_x = (float)samples[index].x - mean_x;
-    float delta_y = (float)samples[index].y - mean_y;
-    float delta_z = (float)samples[index].z - mean_z;
-    square_sum_x += delta_x * delta_x;
-    square_sum_y += delta_y * delta_y;
-    square_sum_z += delta_z * delta_z;
-  }
-
-  /* +/-16 g is 2048 LSB/g; convert the DC-removed RMS to m/s^2. */
-  const float acceleration_scale = 9.80665f / 2048.0f;
-  *rms_x = sqrtf(square_sum_x / SAMPLE_COUNT) * acceleration_scale;
-  *rms_y = sqrtf(square_sum_y / SAMPLE_COUNT) * acceleration_scale;
-  *rms_z = sqrtf(square_sum_z / SAMPLE_COUNT) * acceleration_scale;
-  return HAL_OK;
 }
 
-static void DisplayRms(float rms_x, float rms_y, float rms_z)
+static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
+                             uint16_t sample_count)
 {
   char line[24];
 
-  ssd1306_Fill(Black);
-  snprintf(line, sizeof(line), "X: %5.2f m/s2", rms_x);
-  ssd1306_SetCursor(0, 0);
-  ssd1306_WriteString(line, Font_6x8, White);
-  snprintf(line, sizeof(line), "Y: %5.2f m/s2", rms_y);
-  ssd1306_SetCursor(0, 16);
-  ssd1306_WriteString(line, Font_6x8, White);
-  snprintf(line, sizeof(line), "Z: %5.2f m/s2", rms_z);
-  ssd1306_SetCursor(0, 32);
-  ssd1306_WriteString(line, Font_6x8, White);
-  ssd1306_UpdateScreen();
+  for (uint16_t index = 0U; index < sample_count; ++index)
+  {
+    const ICM42688_AccelSample *sample = &samples[index];
+      int32_t values[3] = {sample->x, sample->y, sample->z};
+    for (uint32_t axis = 0U; axis < 3U; ++axis)
+    {
+      rms_sum[axis] += values[axis];
+      rms_square_sum[axis] += (int64_t)values[axis] * values[axis];
+    }
+    rms_sample_count = (uint16_t)(rms_sample_count + 1U);
+
+    if (rms_sample_count == 500U)
+    {
+      float rms[3];
+      const float acceleration_scale = 9.80665f / 2048.0f;
+      for (uint32_t axis = 0U; axis < 3U; ++axis)
+      {
+        float mean = (float)rms_sum[axis] / 500.0f;
+        float variance = ((float)rms_square_sum[axis] / 500.0f) - (mean * mean);
+        rms[axis] = sqrtf(fmaxf(variance, 0.0f)) * acceleration_scale;
+        rms_sum[axis] = 0;
+        rms_square_sum[axis] = 0;
+      }
+      rms_sample_count = 0U;
+
+      ssd1306_Fill(Black);
+      snprintf(line, sizeof(line), "X: %5.2f m/s2", rms[0]);
+      ssd1306_SetCursor(0, 0);
+      ssd1306_WriteString(line, Font_6x8, White);
+      snprintf(line, sizeof(line), "Y: %5.2f m/s2", rms[1]);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(line, Font_6x8, White);
+      snprintf(line, sizeof(line), "Z: %5.2f m/s2", rms[2]);
+      ssd1306_SetCursor(0, 32);
+      ssd1306_WriteString(line, Font_6x8, White);
+      snprintf(line, sizeof(line), "i2cFails: %lu", (unsigned long)accel_i2c_failures);
+      ssd1306_SetCursor(0, 48);
+      ssd1306_WriteString(line, Font_6x8, White);
+      ssd1306_UpdateScreen();
+    }
+  }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == GPIO_PIN_5)
   {
-    accel_data_ready = 1U;
+    uint16_t head = accel_queue_head;
+    uint16_t next_head = (uint16_t)((head + 1U) &
+                                    (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
+    ICM42688_AccelSample sample;
+
+    if (ICM42688_ReadAccel(&hi2c1, &sample) == HAL_OK)
+    {
+      if (next_head == accel_queue_tail)
+      {
+        accel_queue_tail = (uint16_t)((accel_queue_tail + 1U) &
+                                      (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
+        accel_queue_overruns++;
+      }
+      accel_sample_queue[head] = sample;
+      __DMB();
+      accel_queue_head = next_head;
+    }
+    else
+    {
+      accel_i2c_failures++;
+    }
   }
 }
 

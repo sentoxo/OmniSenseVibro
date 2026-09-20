@@ -10,6 +10,8 @@
 #define ICM42688_REG_WHO_AM_I         0x75U
 #define ICM42688_WHO_AM_I             0x47U
 #define ICM42688_TIMEOUT_MS           100U
+#define ICM42688_READ_TIMEOUT_MS      1U
+#define ICM42688_READ_RETRIES         3U
 
 static HAL_StatusTypeDef ICM42688_WriteRegister(I2C_HandleTypeDef *hi2c,
                                                  uint8_t reg,
@@ -88,10 +90,17 @@ HAL_StatusTypeDef ICM42688_ReadAccel(I2C_HandleTypeDef *hi2c,
 {
     uint8_t data[6];
     HAL_StatusTypeDef status;
+    uint32_t attempt;
 
-    status = HAL_I2C_Mem_Read(hi2c, ICM42688_ADDRESS, ICM42688_REG_ACCEL_DATA,
-                              I2C_MEMADD_SIZE_8BIT, data, sizeof(data),
-                              ICM42688_TIMEOUT_MS);
+    status = HAL_ERROR;
+    for (attempt = 0U; attempt < ICM42688_READ_RETRIES; ++attempt) {
+        status = HAL_I2C_Mem_Read(hi2c, ICM42688_ADDRESS, ICM42688_REG_ACCEL_DATA,
+                                  I2C_MEMADD_SIZE_8BIT, data, sizeof(data),
+                                  ICM42688_READ_TIMEOUT_MS);
+        if (status == HAL_OK) {
+            break;
+        }
+    }
     if (status != HAL_OK) {
         return status;
     }
