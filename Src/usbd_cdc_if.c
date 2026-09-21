@@ -94,6 +94,7 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
+static volatile uint8_t cdc_host_ready = 0U;
 
 /* USER CODE END PRIVATE_VARIABLES */
 
@@ -152,6 +153,7 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
 static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
+  cdc_host_ready = 0U;
   /* Set Application Buffers */
   USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
@@ -166,6 +168,7 @@ static int8_t CDC_Init_FS(void)
 static int8_t CDC_DeInit_FS(void)
 {
   /* USER CODE BEGIN 4 */
+  cdc_host_ready = 0U;
   return (USBD_OK);
   /* USER CODE END 4 */
 }
@@ -228,7 +231,11 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
-
+      if (length == 0U)
+      {
+        const USBD_SetupReqTypedef *request = (const USBD_SetupReqTypedef *)pbuf;
+        cdc_host_ready = ((request->wValue & 0x0001U) != 0U) ? 1U : 0U;
+      }
     break;
 
     case CDC_SEND_BREAK:
@@ -290,6 +297,11 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
   /* USER CODE END 7 */
   return result;
+}
+
+uint8_t CDC_IsHostReady(void)
+{
+  return cdc_host_ready;
 }
 
 /**

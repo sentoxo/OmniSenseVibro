@@ -57,14 +57,20 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 
 #define ACCEL_SAMPLE_QUEUE_SIZE 8192U
-#define CDC_PACKET_SIZE         64U
+#define CDC_PACKET_SIZE         256U
+#define CDC_MAX_SAMPLES         16U
 
 static ICM42688_AccelSample accel_sample_queue[ACCEL_SAMPLE_QUEUE_SIZE];
+static uint32_t accel_sequence_queue[ACCEL_SAMPLE_QUEUE_SIZE];
 static volatile uint16_t accel_queue_head = 0U;
 static volatile uint16_t accel_queue_tail = 0U;
 static volatile uint32_t accel_queue_overruns = 0U;
 static volatile uint32_t accel_i2c_failures = 0U;
-static uint32_t accel_sequence = 0U;
+static volatile uint32_t accel_samples_discarded = 0U;
+static volatile uint32_t usb_packets_transmitted = 0U;
+static volatile uint32_t usb_samples_transmitted = 0U;
+static volatile uint32_t usb_busy_events = 0U;
+static volatile uint32_t accel_sequence = 0U;
 static uint8_t cdc_stream_buffers[2][CDC_PACKET_SIZE];
 static uint8_t cdc_buffer_index = 0U;
 static int64_t rms_sum[3] = {0, 0, 0};
@@ -143,8 +149,6 @@ int main(void)
     ssd1306_UpdateScreen();
     Error_Handler();
   }
-
-  CDC_Transmit_FS((uint8_t *)"Starting...\r\n", 15);
 
   /* USER CODE END 2 */
 
@@ -405,6 +409,32 @@ static void MX_GPIO_Init(void)
 
 static void TransmitAccelSamples(void)
 {
+  if (CDC_IsHostReady() == 0U)
+  {
+    ICM42688_AccelSample rms_samples[CDC_MAX_SAMPLES];
+    uint16_t sample_count = 0U;
+
+    while (accel_queue_tail != accel_queue_head &&
+           sample_count < CDC_MAX_SAMPLES)
+    {
+      rms_samples[sample_count] =
+          accel_sample_queue[accel_queue_tail &
+                             (ACCEL_SAMPLE_QUEUE_SIZE - 1U)];
+      __disable_irq();
+      accel_queue_tail = (uint16_t)((accel_queue_tail + 1U) &
+                                    (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
+      __enable_irq();
+      sample_count++;
+    }
+
+    if (sample_count != 0U)
+    {
+      accel_samples_discarded += sample_count;
+      UpdateRmsDisplay(rms_samples, sample_count);
+    }
+    return;
+  }
+
   while (accel_queue_tail != accel_queue_head)
   {
     uint16_t tail = accel_queue_tail;
@@ -412,33 +442,32 @@ static void TransmitAccelSamples(void)
     uint16_t sample_count = 0U;
     uint16_t buffer_length = 0U;
     char line[40];
-    ICM42688_AccelSample packet_samples[5];
+    ICM42688_AccelSample packet_samples[CDC_MAX_SAMPLES];
     uint8_t *cdc_stream_buffer = cdc_stream_buffers[cdc_buffer_index];
 
-    while (tail != head && sample_count < 5U)
+    while (tail != head && sample_count < CDC_MAX_SAMPLES)
     {
       ICM42688_AccelSample sample;
-      __disable_irq();
-      sample = accel_sample_queue[tail & (ACCEL_SAMPLE_QUEUE_SIZE - 1U)];
-      tail = (uint16_t)((tail + 1U) & (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
-      accel_queue_tail = tail;
-      __enable_irq();
-      packet_samples[sample_count] = sample;
+      uint16_t sample_tail = tail;
+      sample = accel_sample_queue[sample_tail & (ACCEL_SAMPLE_QUEUE_SIZE - 1U)];
+      uint32_t sequence = accel_sequence_queue[
+          sample_tail & (ACCEL_SAMPLE_QUEUE_SIZE - 1U)];
 
       int written = snprintf(line, sizeof(line),
-                           "S0,%lu,%d,%d,%d\n",
-                           (unsigned long)accel_sequence,
-                           (int)sample.x,
-                           (int)sample.y,
-                           (int)sample.z);
+                             "S0,%lu,%d,%d,%d\r\n",
+                             (unsigned long)sequence,
+                             (int)sample.x,
+                             (int)sample.y,
+                             (int)sample.z);
       if (written <= 0 || (uint32_t)written >= CDC_PACKET_SIZE - buffer_length)
       {
         break;
       }
+      packet_samples[sample_count] = sample;
       memcpy(&cdc_stream_buffer[buffer_length], line, (size_t)written);
       buffer_length = (uint16_t)(buffer_length + (uint16_t)written);
       sample_count = (uint16_t)(sample_count + 1U);
-      accel_sequence++;
+      tail = (uint16_t)((sample_tail + 1U) & (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
     }
 
     if (sample_count == 0U)
@@ -446,10 +475,20 @@ static void TransmitAccelSamples(void)
       break;
     }
 
-    UpdateRmsDisplay(packet_samples, sample_count);
     if (CDC_Transmit_FS(cdc_stream_buffer, buffer_length) == USBD_OK)
     {
+      __disable_irq();
+      accel_queue_tail = tail;
+      __enable_irq();
+      usb_packets_transmitted++;
+      usb_samples_transmitted += sample_count;
+      UpdateRmsDisplay(packet_samples, sample_count);
       cdc_buffer_index ^= 1U;
+    }
+    else
+    {
+      usb_busy_events++;
+      break;
     }
   }
 }
@@ -494,9 +533,16 @@ static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
       snprintf(line, sizeof(line), "Z: %5.2f m/s2", rms[2]);
       ssd1306_SetCursor(0, 32);
       ssd1306_WriteString(line, Font_6x8, White);
-      snprintf(line, sizeof(line), "i2cFails: %lu", (unsigned long)accel_i2c_failures);
-      ssd1306_SetCursor(0, 48);
+      snprintf(line, sizeof(line), "TX:%lu D:%lu",
+           (unsigned long)usb_samples_transmitted,
+         (unsigned long)accel_samples_discarded);
+       ssd1306_SetCursor(0, 40);
       ssd1306_WriteString(line, Font_6x8, White);
+       snprintf(line, sizeof(line), "Q:%lu I:%lu",
+          (unsigned long)accel_queue_overruns,
+          (unsigned long)accel_i2c_failures);
+       ssd1306_SetCursor(0, 48);
+       ssd1306_WriteString(line, Font_6x8, White);
       ssd1306_UpdateScreen();
     }
   }
@@ -513,15 +559,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     if (ICM42688_ReadAccel(&hi2c1, &sample) == HAL_OK)
     {
+      uint32_t sequence = accel_sequence++;
       if (next_head == accel_queue_tail)
       {
-        accel_queue_tail = (uint16_t)((accel_queue_tail + 1U) &
-                                      (ACCEL_SAMPLE_QUEUE_SIZE - 1U));
         accel_queue_overruns++;
       }
-      accel_sample_queue[head] = sample;
-      __DMB();
-      accel_queue_head = next_head;
+      else
+      {
+        accel_sample_queue[head] = sample;
+        accel_sequence_queue[head] = sequence;
+        __DMB();
+        accel_queue_head = next_head;
+      }
     }
     else
     {

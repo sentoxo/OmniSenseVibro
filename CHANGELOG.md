@@ -1,3 +1,13 @@
+[2026-09-21T00:35]
+Preserved sequence IDs correctly when the sample ring is full instead of overwriting the oldest queued sample metadata.
+[2026-09-21T00:30]
+Reduced sequence storage overhead with a parallel queue and kept OLED RMS processing active while USB streaming is unavailable.
+[2026-09-21T00:20]
+Assigned sequence numbers at sensor capture, gated CDC output on DTR, discarded stale samples without a host, and added OLED counters for transmitted, discarded, overrun, and I2C-failed samples.
+[2026-09-21T00:05]
+Corrected batch tail handling and changed the OLED status line to show transmitted sample packets and queue drops.
+[2026-09-21T00:00]
+Optimized USB CDC streaming with 256-byte batches, loss-safe queue commits, and MCU-side transmitted packet counting on the OLED.
 [2026-09-20T00:25]
 Added ping-pong CDC packet buffers to prevent USB backpressure from overwriting an in-flight packet.
 [2026-09-20T00:20]
