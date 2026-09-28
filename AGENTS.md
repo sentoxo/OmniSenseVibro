@@ -39,6 +39,7 @@ cmake --build build/Debug     # build
   [2026-09-19T19:10]
   Added a correction for DC offset in fft.c
   ```
+- Write code in user sections -> "USER CODE START XXX" CODE "USER CODE END XXX"
 
 ## Pitfalls
 

@@ -59,6 +59,7 @@ UART_HandleTypeDef huart1;
 #define ACCEL_SAMPLE_QUEUE_SIZE 8192U
 #define CDC_PACKET_SIZE         256U
 #define CDC_MAX_SAMPLES         16U
+#define RMS_AVERAGE_WINDOW_COUNT 20U
 
 static ICM42688_AccelSample accel_sample_queue[ACCEL_SAMPLE_QUEUE_SIZE];
 static uint32_t accel_sequence_queue[ACCEL_SAMPLE_QUEUE_SIZE];
@@ -76,6 +77,10 @@ static uint8_t cdc_buffer_index = 0U;
 static int64_t rms_sum[3] = {0, 0, 0};
 static int64_t rms_square_sum[3] = {0, 0, 0};
 static uint16_t rms_sample_count = 0U;
+static float rms_history[RMS_AVERAGE_WINDOW_COUNT][3];
+static float rms_history_sum[3] = {0.0f, 0.0f, 0.0f};
+static uint16_t rms_history_count = 0U;
+static uint16_t rms_history_index = 0U;
 
 /* USER CODE END PV */
 
@@ -493,15 +498,32 @@ static void TransmitAccelSamples(void)
   }
 }
 
+static void FormatRmsValue(char *buffer, uint16_t value_centi)
+{
+  if (value_centi >= 10000U)
+  {
+    snprintf(buffer, 6U, "%u", (unsigned int)((value_centi + 50U) / 100U));
+  }
+  else
+  {
+    snprintf(buffer, 6U, "%u.%02u",
+             (unsigned int)(value_centi / 100U),
+             (unsigned int)(value_centi % 100U));
+  }
+}
+
 static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
                              uint16_t sample_count)
 {
-  char line[24];
+  char line[32];
+  char current_text[6];
+  char average_text[6];
+  char peak_text[6];
 
   for (uint16_t index = 0U; index < sample_count; ++index)
   {
     const ICM42688_AccelSample *sample = &samples[index];
-      int32_t values[3] = {sample->x, sample->y, sample->z};
+    int32_t values[3] = {sample->x, sample->y, sample->z};
     for (uint32_t axis = 0U; axis < 3U; ++axis)
     {
       rms_sum[axis] += values[axis];
@@ -512,37 +534,77 @@ static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
     if (rms_sample_count == 500U)
     {
       float rms[3];
+      float average[3];
       const float acceleration_scale = 9.80665f / 2048.0f;
       for (uint32_t axis = 0U; axis < 3U; ++axis)
       {
         float mean = (float)rms_sum[axis] / 500.0f;
         float variance = ((float)rms_square_sum[axis] / 500.0f) - (mean * mean);
         rms[axis] = sqrtf(fmaxf(variance, 0.0f)) * acceleration_scale;
+        rms_history_sum[axis] -= rms_history[rms_history_index][axis];
+        rms_history[rms_history_index][axis] = rms[axis];
+        rms_history_sum[axis] += rms[axis];
+        average[axis] = rms_history_sum[axis] /
+            (float)((rms_history_count < RMS_AVERAGE_WINDOW_COUNT)
+                        ? (rms_history_count + 1U)
+                        : RMS_AVERAGE_WINDOW_COUNT);
         rms_sum[axis] = 0;
         rms_square_sum[axis] = 0;
       }
+      if (rms_history_count < RMS_AVERAGE_WINDOW_COUNT)
+      {
+        rms_history_count++;
+      }
+      rms_history_index = (uint16_t)((rms_history_index + 1U) %
+                                     RMS_AVERAGE_WINDOW_COUNT);
       rms_sample_count = 0U;
 
       ssd1306_Fill(Black);
-      snprintf(line, sizeof(line), "X: %5.2f m/s2", rms[0]);
       ssd1306_SetCursor(0, 0);
-      ssd1306_WriteString(line, Font_6x8, White);
-      snprintf(line, sizeof(line), "Y: %5.2f m/s2", rms[1]);
-      ssd1306_SetCursor(0, 16);
-      ssd1306_WriteString(line, Font_6x8, White);
-      snprintf(line, sizeof(line), "Z: %5.2f m/s2", rms[2]);
-      ssd1306_SetCursor(0, 32);
-      ssd1306_WriteString(line, Font_6x8, White);
+      ssd1306_WriteString("AX NOW AVG PEAK m/s2", Font_6x8, White);
+      for (uint32_t axis = 0U; axis < 3U; ++axis)
+      {
+        const char axis_name = "XYZ"[axis];
+        float peak = 0.0f;
+        for (uint16_t history_index = 0U;
+             history_index < rms_history_count;
+             ++history_index)
+        {
+          if (rms_history[history_index][axis] > peak)
+          {
+            peak = rms_history[history_index][axis];
+          }
+        }
+        uint16_t current_centi = (uint16_t)(rms[axis] * 100.0f + 0.5f);
+        uint16_t peak_centi = (uint16_t)(peak * 100.0f + 0.5f);
+        FormatRmsValue(current_text, current_centi);
+        FormatRmsValue(peak_text, peak_centi);
+        if (rms_history_count == RMS_AVERAGE_WINDOW_COUNT)
+        {
+          uint16_t average_centi =
+              (uint16_t)(average[axis] * 100.0f + 0.5f);
+          FormatRmsValue(average_text, average_centi);
+          snprintf(line, sizeof(line), "%c:%s %s %s",
+                   axis_name, current_text, average_text, peak_text);
+        }
+        else
+        {
+          snprintf(line, sizeof(line), "%c:%s --.-- %s",
+                   axis_name, current_text, peak_text);
+        }
+        ssd1306_SetCursor(0, (uint8_t)((axis + 1U) * 8U));
+        ssd1306_WriteString(line, Font_6x8, White);
+      }
       snprintf(line, sizeof(line), "TX:%lu D:%lu",
-           (unsigned long)usb_samples_transmitted,
-         (unsigned long)accel_samples_discarded);
-       ssd1306_SetCursor(0, 40);
+               (unsigned long)usb_samples_transmitted,
+               (unsigned long)accel_samples_discarded);
+      ssd1306_SetCursor(0, 40);
       ssd1306_WriteString(line, Font_6x8, White);
-       snprintf(line, sizeof(line), "Q:%lu I:%lu",
-          (unsigned long)accel_queue_overruns,
-          (unsigned long)accel_i2c_failures);
-       ssd1306_SetCursor(0, 48);
-       ssd1306_WriteString(line, Font_6x8, White);
+      snprintf(line, sizeof(line), "Q:%lu I:%lu",
+               (unsigned long)accel_queue_overruns,
+               (unsigned long)accel_i2c_failures);
+      ssd1306_SetCursor(0, 48);
+      ssd1306_WriteString(line, Font_6x8, White);
       ssd1306_UpdateScreen();
     }
   }

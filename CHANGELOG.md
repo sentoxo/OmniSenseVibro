@@ -1,3 +1,21 @@
+[2026-09-28T20:13]
+Changed per-axis peak RMS to the maximum value in the rolling 5-second RMS window.
+
+[2026-09-28T20:03]
+Added a per-axis peak RMS column for the highest 500-sample RMS window.
+
+[2026-09-28T19:38]
+Restored OLED transmission, discard, queue-overrun, and I2C-failure statistics alongside axis RMS readings.
+
+[2026-09-28T19:34]
+Sized the OLED formatting buffer to avoid integer-format truncation warnings.
+
+[2026-09-28T19:34]
+Formatted OLED RMS values using integer centi-units instead of floating-point printf.
+
+[2026-09-28T19:30]
+Changed the OLED to show per-axis current RMS acceleration and its rolling 5-second average in m/s2.
+
 [2026-09-21T00:35]
 Preserved sequence IDs correctly when the sample ring is full instead of overwriting the oldest queued sample metadata.
 [2026-09-21T00:30]
