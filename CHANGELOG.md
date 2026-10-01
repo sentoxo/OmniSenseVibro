@@ -1,3 +1,6 @@
+[2026-09-28T21:20]
+Armed the ICM-42688 data-ready EXTI9_5 interrupt last (in USER CODE BEGIN 2 after ICM42688_Init succeeds, with EXTI and NVIC pending bits cleared) instead of in MX_GPIO_Init, so no latched or spurious PB5 edge can run an accelerometer read on a not-ready I2C1 handle; removes the startup I:1 counter.
+
 [2026-09-28T20:45]
 Changed the axis glyph origin to a plain axis crossing (no 3x3 block) and fixed the 23px-wide bitmap packing: rows are now split 8/8/7 bits to match ssd1306_DrawBitmap, which previously shifted the glyph 1px right per byte boundary and pushed the Y label off the screen edge.
 

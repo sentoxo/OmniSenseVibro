@@ -208,6 +208,14 @@ int main(void)
     Error_Handler();
   }
 
+  /* Arm the ICM-42688 data-ready interrupt last: I2C1 is ready and the sensor
+     has just been reset and configured, so no latched or spurious PB5 edge can
+     trigger an accelerometer read on a busy/not-ready handle. */
+  __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_5);
+  HAL_NVIC_ClearPendingIRQ(EXTI9_5_IRQn);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -455,10 +463,10 @@ static void MX_GPIO_Init(void)
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
-  /* Enable the EXTI9_5 interrupt line so the ICM-42688 data-ready
-     interrupt on PB5 can wake the main loop. */
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+  /* The EXTI9_5 NVIC interrupt is deliberately NOT enabled here: MX_GPIO_Init
+     runs before MX_I2C1_Init() and before the IMU is configured, so any edge
+     on PB5 in this window would run an I2C read on a not-ready handle. The
+     interrupt is armed in USER CODE BEGIN 2 after ICM42688_Init() succeeds. */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -653,7 +661,7 @@ static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
                (unsigned long)CLAMP_COUNTER(accel_samples_discarded));
       ssd1306_SetCursor(0, 32);
       ssd1306_WriteString(line, Font_6x8, White);
-      snprintf(line, sizeof(line), "Q:%lu I:%lu",
+      snprintf(line, sizeof(line), "QueOve:%lu I2CErr:%lu",
                (unsigned long)CLAMP_COUNTER(accel_queue_overruns),
                (unsigned long)CLAMP_COUNTER(accel_i2c_failures));
       ssd1306_SetCursor(0, 40);
