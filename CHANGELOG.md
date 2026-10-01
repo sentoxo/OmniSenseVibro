@@ -1,3 +1,12 @@
+[2026-09-28T20:45]
+Changed the axis glyph origin to a plain axis crossing (no 3x3 block) and fixed the 23px-wide bitmap packing: rows are now split 8/8/7 bits to match ssd1306_DrawBitmap, which previously shifted the glyph 1px right per byte boundary and pushed the Y label off the screen edge.
+
+[2026-09-28T20:30]
+Moved the axis-orientation glyph to the bottom-right corner and enlarged it to 23x16 px with 5x5 axis letters; shifted the TX/D and Q/I status lines up to y=32 and y=40 and clamped counters to 5 digits so they never overlap the glyph.
+
+[2026-09-28T20:05]
+Added a 16x8 axis-orientation glyph to the bottom-left corner of the OLED showing that X runs along the 128 px edge and Y along the 64 px edge.
+
 [2026-09-28T20:13]
 Changed per-axis peak RMS to the maximum value in the rolling 5-second RMS window.
 

@@ -39,6 +39,17 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+/* Axis orientation glyph: bottom-right corner, bottom 16 rows of the screen. */
+#define AXIS_INDICATOR_X      (SSD1306_WIDTH - AXIS_INDICATOR_WIDTH)
+#define AXIS_INDICATOR_Y      (SSD1306_HEIGHT - AXIS_INDICATOR_HEIGHT)
+#define AXIS_INDICATOR_WIDTH  23U
+#define AXIS_INDICATOR_HEIGHT 16U
+#define AXIS_INDICATOR_BYTES  ((AXIS_INDICATOR_WIDTH + 7U) / 8U)
+
+/* Clamp OLED counters to 8 digits so the status lines stay clear of the glyph. */
+#define CLAMP_COUNTER(value)                                                 \
+  ((uint32_t)((value) > 99999999U ? 99999999UL : (uint32_t)(value)))
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -96,11 +107,53 @@ static void MX_USART1_UART_Init(void);
 static void TransmitAccelSamples(void);
 static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
                              uint16_t sample_count);
+static void DrawAxisIndicator(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * @brief  Draw the sensor axis orientation glyph in the bottom-right corner.
+  *
+  * Tells the user how the displayed axes map onto the physical device: the X
+  * axis runs along the long (128 px) edge of the display, the Y axis along the
+  * short (64 px) edge. The two arrows cross at the sensor origin and point in
+  * the positive direction of each axis.
+  *
+  *  ..............#.......   Y arrow tip
+  *  .............###......
+  *  ..............#.......
+  *  ..............#..#...#   Y label
+  *  ..............#..#...#
+  *  ..............#...#.#.
+  *  ....#...#.....#....#..
+  *  .....#.#......#....#..
+  *  ......#.......#.......   X label
+  *  .....#.#......#.......
+  *  ....#...#.....#.......
+  *  ..............#.......
+  *  ..#...........#.......   X arrow head
+  *  .#################....   X axis line
+  *  ..#...........#.......   origin (axis crossing)
+  */
+static void DrawAxisIndicator(void)
+{
+  /* Row-major, 1 bit per pixel; MSB of byte N is column N * 8. */
+  static const uint8_t glyph[AXIS_INDICATOR_HEIGHT][AXIS_INDICATOR_BYTES] = {
+      {0x00, 0x02, 0x00}, {0x00, 0x07, 0x00}, {0x00, 0x02, 0x00},
+      {0x00, 0x02, 0x44}, {0x00, 0x02, 0x44}, {0x00, 0x02, 0x28},
+      {0x08, 0x82, 0x10}, {0x05, 0x02, 0x10}, {0x02, 0x02, 0x00},
+      {0x05, 0x02, 0x00}, {0x08, 0x82, 0x00}, {0x00, 0x02, 0x00},
+      {0x20, 0x02, 0x00}, {0x7F, 0xFF, 0xC0}, {0x20, 0x02, 0x00},
+      {0x00, 0x02, 0x00},
+  };
+
+  ssd1306_DrawBitmap(AXIS_INDICATOR_X, AXIS_INDICATOR_Y,
+                     (const unsigned char *)&glyph[0][0], AXIS_INDICATOR_WIDTH,
+                     AXIS_INDICATOR_HEIGHT, White);
+}
 
 /* USER CODE END 0 */
 
@@ -596,15 +649,16 @@ static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
         ssd1306_WriteString(line, Font_6x8, White);
       }
       snprintf(line, sizeof(line), "TX:%lu D:%lu",
-               (unsigned long)usb_samples_transmitted,
-               (unsigned long)accel_samples_discarded);
-      ssd1306_SetCursor(0, 40);
+               (unsigned long)CLAMP_COUNTER(usb_samples_transmitted),
+               (unsigned long)CLAMP_COUNTER(accel_samples_discarded));
+      ssd1306_SetCursor(0, 32);
       ssd1306_WriteString(line, Font_6x8, White);
       snprintf(line, sizeof(line), "Q:%lu I:%lu",
-               (unsigned long)accel_queue_overruns,
-               (unsigned long)accel_i2c_failures);
-      ssd1306_SetCursor(0, 48);
+               (unsigned long)CLAMP_COUNTER(accel_queue_overruns),
+               (unsigned long)CLAMP_COUNTER(accel_i2c_failures));
+      ssd1306_SetCursor(0, 40);
       ssd1306_WriteString(line, Font_6x8, White);
+      DrawAxisIndicator();
       ssd1306_UpdateScreen();
     }
   }
