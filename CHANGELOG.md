@@ -1,3 +1,6 @@
+[2026-09-28T21:45]
+Added a 3-second boot screen on the OLED: 'Booting up Vibro...', build stamp (__DATE__ __TIME__), hardcoded Flash/RAM footprint snapshot taken from the linker report, IMU detected/not-detected result and the axis glyph; replaced the old 'Starting...' text.
+
 [2026-09-28T21:20]
 Armed the ICM-42688 data-ready EXTI9_5 interrupt last (in USER CODE BEGIN 2 after ICM42688_Init succeeds, with EXTI and NVIC pending bits cleared) instead of in MX_GPIO_Init, so no latched or spurious PB5 edge can run an accelerometer read on a not-ready I2C1 handle; removes the startup I:1 counter.
 

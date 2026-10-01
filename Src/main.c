@@ -50,6 +50,15 @@
 #define CLAMP_COUNTER(value)                                                 \
   ((uint32_t)((value) > 99999999U ? 99999999UL : (uint32_t)(value)))
 
+/* Boot screen memory figures. The linker reports the real sizes at link time;
+   these are snapshots taken from the Debug build map output and must be
+   refreshed after any build that changes code size:
+     FLASH 59480 B -> 58 KB, RAM 93880 B -> 92 KB  (Debug, 2026-09-28) */
+#define FLASH_TOTAL_KB 1024U
+#define RAM_TOTAL_KB   128U
+#define FLASH_USED_KB  58U
+#define RAM_USED_KB    92U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -108,6 +117,7 @@ static void TransmitAccelSamples(void);
 static void UpdateRmsDisplay(const ICM42688_AccelSample *samples,
                              uint16_t sample_count);
 static void DrawAxisIndicator(void);
+static void ShowBootScreen(const char *imu_text);
 
 /* USER CODE END PFP */
 
@@ -155,6 +165,49 @@ static void DrawAxisIndicator(void)
                      AXIS_INDICATOR_HEIGHT, White);
 }
 
+/**
+  * @brief  Draw the boot information screen.
+  *
+  * Shows the build stamp (__DATE__ / __TIME__), the linked memory footprint
+  * (FLASH_USED_KB / RAM_USED_KB snapshots, see USER CODE BEGIN PD) and the
+  * accelerometer connection result, together with the axis orientation glyph.
+  *
+  * @param  imu_text Text for the IMU status line, e.g. "checking...".
+  */
+static void ShowBootScreen(const char *imu_text)
+{
+  char line[24];
+
+  ssd1306_Fill(Black);
+
+  ssd1306_SetCursor(0, 0);
+  ssd1306_WriteString("Booting up Vibro...", Font_6x8, White);
+
+  ssd1306_SetCursor(0, 8);
+  ssd1306_WriteString("Compiled at:", Font_6x8, White);
+
+  snprintf(line, sizeof(line), "%s %s", __DATE__, __TIME__);
+  ssd1306_SetCursor(0, 16);
+  ssd1306_WriteString(line, Font_6x8, White);
+
+  snprintf(line, sizeof(line), "Flash: %u/%uKB", (unsigned int)FLASH_USED_KB,
+           (unsigned int)FLASH_TOTAL_KB);
+  ssd1306_SetCursor(0, 24);
+  ssd1306_WriteString(line, Font_6x8, White);
+
+  snprintf(line, sizeof(line), "RAM: %u/%uKB", (unsigned int)RAM_USED_KB,
+           (unsigned int)RAM_TOTAL_KB);
+  ssd1306_SetCursor(0, 32);
+  ssd1306_WriteString(line, Font_6x8, White);
+
+  snprintf(line, sizeof(line), "IMU: %s", imu_text);
+  ssd1306_SetCursor(0, 40);
+  ssd1306_WriteString(line, Font_6x8, White);
+
+  DrawAxisIndicator();
+  ssd1306_UpdateScreen();
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -165,6 +218,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+
+  uint8_t imu_ok = 0U;
 
   /* USER CODE END 1 */
 
@@ -194,17 +249,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   ssd1306_Init();
-  ssd1306_Fill(Black);
-  ssd1306_SetCursor(0, 0);
-  ssd1306_WriteString("Starting...", Font_6x8, White);
-  ssd1306_UpdateScreen();
+  ShowBootScreen("checking...");
 
-  if (ICM42688_Init(&hi2c1) != HAL_OK)
+  imu_ok = (ICM42688_Init(&hi2c1) == HAL_OK);
+
+  ShowBootScreen(imu_ok != 0U ? "detected" : "NOT DETECTED");
+  HAL_Delay(3000);
+
+  if (imu_ok == 0U)
   {
-    ssd1306_Fill(Black);
-    ssd1306_SetCursor(0, 0);
-    ssd1306_WriteString("IMU NO CONNECTION", Font_6x8, White);
-    ssd1306_UpdateScreen();
     Error_Handler();
   }
 
